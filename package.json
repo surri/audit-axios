@@ -1,0 +1,33 @@
+{
+  "name": "audit-axios",
+  "version": "0.0.2",
+  "description": "Scan local repos for vulnerable axios versions (CVE-2026-40175) and patch interactively",
+  "bin": {
+    "audit-axios": "./bin/cli.js"
+  },
+  "files": [
+    "bin/cli.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "axios",
+    "security",
+    "vulnerability",
+    "audit",
+    "cve",
+    "patch",
+    "scanner",
+    "cli"
+  ],
+  "author": "surri",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/surri/audit-axios.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "commonjs"
+}
