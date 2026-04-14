@@ -12,6 +12,8 @@
 const fs = require('fs')
 const path = require('path')
 const { execSync } = require('child_process')
+const c = require('../lib/colors')
+const { checkboxSelect, actionSelect, restoreTerminal } = require('../lib/ui')
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -23,16 +25,29 @@ const CVE_ID = 'CVE-2026-40175'
 const VERSION_SPEC_RE = /^[\^~>=<\s]*\d+\.\d+\.\d+(-[\w.]+)?$/
 const SEMVER_RE = /^\d+\.\d+(\.\d+)?/
 
-// ─── ANSI Colors ─────────────────────────────────────────────────────────────
+// Always skipped — never useful to recurse into
+const ALWAYS_IGNORED = new Set([
+  'node_modules', '.next', '.git',
+])
 
-const c = {
-  red: (s) => `\x1b[31m${s}\x1b[0m`,
-  green: (s) => `\x1b[32m${s}\x1b[0m`,
-  yellow: (s) => `\x1b[33m${s}\x1b[0m`,
-  blue: (s) => `\x1b[34m${s}\x1b[0m`,
-  cyan: (s) => `\x1b[36m${s}\x1b[0m`,
-  dim: (s) => `\x1b[2m${s}\x1b[0m`,
-  bold: (s) => `\x1b[1m${s}\x1b[0m`,
+// Skipped by default, included with --include-all
+const SOFT_IGNORED = new Set([
+  '.cache',
+  // IDE extensions (explicit)
+  '.vscode', '.cursor', '.kiro', '.zed', '.antigravity',
+  // Package managers / caches
+  '.npm', '.yarn', '.pnpm-store', '.bun',
+  // Other tooling
+  '.cargo', '.rustup', '.gradle', '.m2', '.cocoapods',
+  'Library', '.Trash',
+])
+
+function isIgnoredDir(dirPath, entryName, includeAll) {
+  if (ALWAYS_IGNORED.has(entryName)) return true
+  if (includeAll) return false
+  if (SOFT_IGNORED.has(entryName)) return true
+  if (entryName.startsWith('.') && fs.existsSync(path.join(dirPath, entryName, 'extensions'))) return true
+  return false
 }
 
 // ─── Environment ─────────────────────────────────────────────────────────────
@@ -82,7 +97,7 @@ function resolveTilde(dir) {
   return path.resolve(dir.replace(/^~(?=$|\/)/, HOME))
 }
 
-function findPackageJsonFiles(dirs, maxDepth) {
+function findPackageJsonFiles(dirs, maxDepth, includeAll) {
   const results = []
 
   function walk(dir, depth) {
@@ -92,7 +107,7 @@ function findPackageJsonFiles(dirs, maxDepth) {
       const entries = fs.readdirSync(dir, { withFileTypes: true })
 
       for (const entry of entries) {
-        if (entry.name === 'node_modules' || entry.name === '.next' || entry.name === '.git') continue
+        if (isIgnoredDir(dir, entry.name, includeAll)) continue
         if (entry.isSymbolicLink()) continue
 
         const fullPath = path.join(dir, entry.name)
@@ -175,8 +190,8 @@ function getSpecVersion(pkgPath) {
 
 // ─── Scanning ────────────────────────────────────────────────────────────────
 
-function scanRepos(dirs, minVersion) {
-  const packageJsonFiles = findPackageJsonFiles(dirs, MAX_DEPTH)
+function scanRepos(dirs, minVersion, includeAll) {
+  const packageJsonFiles = findPackageJsonFiles(dirs, MAX_DEPTH, includeAll)
   const seen = new Set()
 
   return packageJsonFiles.reduce((repos, pkgPath) => {
@@ -385,168 +400,12 @@ function printScanResults(repos) {
   console.log('')
 }
 
-// ─── Terminal Utilities ──────────────────────────────────────────────────────
-
-let interactiveActive = false
-
-const term = {
-  clearLine: () => process.stdout.write('\x1b[2K'),
-  cursorTo: (col) => process.stdout.write(`\x1b[${col}G`),
-  cursorUp: (n) => { if (n > 0) process.stdout.write(`\x1b[${n}A`) },
-  cursorDown: (n) => { if (n > 0) process.stdout.write(`\x1b[${n}B`) },
-  hideCursor: () => { if (process.stdout.isTTY) process.stdout.write('\x1b[?25l') },
-  showCursor: () => { if (process.stdout.isTTY) process.stdout.write('\x1b[?25h') },
-}
-
-function restoreTerminal() {
-  if (!interactiveActive) return
-  if (process.stdin.isTTY && process.stdin.isRaw) process.stdin.setRawMode(false)
-  term.showCursor()
-  interactiveActive = false
-}
-
-process.on('uncaughtException', (err) => {
-  restoreTerminal()
-  console.error(c.red(`\n  Fatal: ${err.message}`))
-  process.exit(1)
-})
-
-process.on('exit', restoreTerminal)
-
-// ─── Interactive Menu (shared) ──────────────────────────────────────────────
-
-function createInteractiveMenu(items, renderFn, onSelect) {
-  return new Promise((resolve) => {
-    let cursor = 0
-    let rendered = 0
-
-    function draw() {
-      term.cursorUp(rendered)
-      const lines = renderFn(items, cursor)
-      for (const line of lines) {
-        term.clearLine()
-        term.cursorTo(1)
-        console.log(line)
-      }
-      rendered = lines.length
-    }
-
-    function cleanup() {
-      process.stdin.setRawMode(false)
-      process.stdin.removeListener('data', onKey)
-      process.stdin.pause()
-      term.showCursor()
-      interactiveActive = false
-    }
-
-    function onKey(key) {
-      if (key === '\x03') { cleanup(); process.exit(0) }
-      if (key === 'q') { cleanup(); resolve(null); return }
-
-      if (key === '\x1b[A' || key === 'k') {
-        cursor = (cursor - 1 + items.length) % items.length
-        draw()
-        return
-      }
-      if (key === '\x1b[B' || key === 'j') {
-        cursor = (cursor + 1) % items.length
-        draw()
-        return
-      }
-
-      const result = onSelect(key, cursor, items, draw)
-      if (result !== undefined) { cleanup(); resolve(result) }
-    }
-
-    interactiveActive = true
-    term.hideCursor()
-    draw()
-    process.stdin.setRawMode(true)
-    process.stdin.resume()
-    process.stdin.setEncoding('utf8')
-    process.stdin.on('data', onKey)
-  })
-}
-
-// ─── Checkbox Select UI ─────────────────────────────────────────────────────
-
-function checkboxSelect(repos) {
-  let checked = new Array(repos.length).fill(false)
-
-  function render(items, cursor) {
-    const lines = items.map((repo, i) => {
-      const ver = repo.installedVersion || repo.specVersion
-      const severity = severityLabel(ver)
-      const pm = c.dim(`[${repo.packageManager}]`)
-      const checkbox = checked[i] ? c.green('[x]') : '[ ]'
-      const pointer = i === cursor ? c.cyan(' >') : '  '
-      const name = i === cursor ? c.bold(repo.shortDir) : repo.shortDir
-      return `${pointer} ${checkbox} ${name} ${severity} ${c.cyan(ver)} ${pm}`
-    })
-    lines.push('', c.dim('  space: toggle  a: all  n: none  enter: confirm  q: quit'))
-    return lines
-  }
-
-  function onSelect(key, cursor, items, draw) {
-    if (key === ' ') {
-      checked = checked.map((v, i) => i === cursor ? !v : v)
-      draw()
-      return undefined
-    }
-    if (key === 'a') {
-      checked = new Array(items.length).fill(true)
-      draw()
-      return undefined
-    }
-    if (key === 'n') {
-      checked = new Array(items.length).fill(false)
-      draw()
-      return undefined
-    }
-    if (key === '\r' || key === '\n') {
-      return items.filter((_, i) => checked[i])
-    }
-    return undefined
-  }
-
-  return createInteractiveMenu(repos, render, onSelect)
-}
-
-// ─── Action Select UI ───────────────────────────────────────────────────────
-
-function actionSelect(targetVersion) {
-  const actions = [
-    { key: 'p', label: 'patch', desc: `Upgrade to ${targetVersion}` },
-    { key: 'r', label: 'remove', desc: 'Uninstall axios' },
-    { key: 's', label: 'skip', desc: 'Do nothing' },
-  ]
-
-  function render(items, cursor) {
-    const lines = items.map((a, i) => {
-      const pointer = i === cursor ? c.cyan(' >') : '  '
-      const label = i === cursor ? c.bold(a.label) : a.label
-      return `${pointer} ${label}  ${c.dim(a.desc)}`
-    })
-    lines.push('', c.dim('  j/k or arrows: move  enter: confirm'))
-    return lines
-  }
-
-  function onSelect(key, cursor, items) {
-    const match = items.findIndex((a) => a.key === key)
-    if (match !== -1) return items[match].label
-    if (key === '\r' || key === '\n') return items[cursor].label
-    return undefined
-  }
-
-  return createInteractiveMenu(actions, render, onSelect)
-}
-
 // ─── Interactive Mode ────────────────────────────────────────────────────────
 
 async function interactiveMode(vulnerableRepos, targetVersion, minVersion) {
   // Step 1: Checkbox select repos
   console.log(c.bold('  Select repos to act on:\n'))
-  const selected = await checkboxSelect(vulnerableRepos)
+  const selected = await checkboxSelect(vulnerableRepos, severityLabel)
 
   if (!selected) {
     console.log(c.dim('\n  Aborted.'))
@@ -607,6 +466,7 @@ function parseArgs(argv) {
     autoPatch: false,
     minVersion: DEFAULT_MIN_VERSION,
     target: DEFAULT_TARGET,
+    includeAll: false,
     help: false,
   }
 
@@ -620,6 +480,9 @@ function parseArgs(argv) {
         break
       case '--auto-patch':
         args.autoPatch = true
+        break
+      case '--include-all':
+        args.includeAll = true
         break
       case '--min-version':
         if (i + 1 >= argv.length) { console.error(c.red('--min-version requires a value')); process.exit(1) }
@@ -667,6 +530,7 @@ ${c.bold('OPTIONS')}
   --auto-patch         Patch all vulnerable repos without prompting
   --min-version VER    Minimum safe version (default: ${DEFAULT_MIN_VERSION})
   --target VER         Target version spec (default: ${DEFAULT_TARGET})
+  --include-all        Include IDE extensions, caches, and other system dirs
   -h, --help           Show this help
 
 ${c.bold('INTERACTIVE CONTROLS')}
@@ -705,7 +569,7 @@ async function main() {
   printHeader(args.minVersion)
 
   process.stdout.write(c.dim('  Scanning...'))
-  const repos = scanRepos(args.dirs, args.minVersion)
+  const repos = scanRepos(args.dirs, args.minVersion, args.includeAll)
   console.log(c.dim(` done\n`))
 
   printScanResults(repos)

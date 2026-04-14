@@ -45,12 +45,20 @@ audit-axios --min-version 1.16.0 --target "^1.16.0" ~/Workspace
 | `--auto-patch` | Patch all without prompting | — |
 | `--min-version` | Minimum safe version | `1.15.0` |
 | `--target` | Target version spec | `^1.15.0` |
+| `--include-all` | Include IDE extensions, caches, and system dirs | — |
+
+## Ignored by Default
+
+IDE extensions (`.vscode`, `.cursor`, `.kiro`, etc.), package caches (`.npm`, `.yarn`), and system dirs are excluded from scans. Use `--include-all` to include them.
+
+`node_modules` and `.git` are **always** excluded — nested dependencies should be fixed via [overrides/resolutions](https://docs.npmjs.com/cli/v10/configuring-npm/package-json#overrides), not direct patching.
 
 ## Features
 
 - Zero dependencies — Node.js built-ins only
 - Auto-detects npm, yarn, pnpm (including `packageManager` field)
 - Monorepo workspace-aware (pnpm-workspace.yaml, yarn workspaces)
+- Scrollable checkbox UI with bulk actions
 - Severity labels (CRITICAL / HIGH / MEDIUM) based on version gap
 - CI mode with `--scan-only` (exit 1 on vulnerability found)
 
